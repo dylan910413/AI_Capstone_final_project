@@ -1,2 +1,5 @@
 ultralytics>=8.0.0
-opencv-python     
+opencv-python   
+filterpy  
+pandas
+deep_sort_realtime
