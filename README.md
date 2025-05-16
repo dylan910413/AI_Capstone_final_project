@@ -178,8 +178,10 @@ AI_Capstone_final_project/
 ├── scripts/            # Component scripts
 │   ├── prepare_riskbench.py       # Dataset preparation
 │   ├── train_yolo_on_riskbench.py # YOLOv8 training
+│   ├── test_yolo.py               # Basic YOLO testing script
 │   ├── track_objects.py           # Object tracking
 │   ├── train_rom_classifier.py    # ROM classifier training
+│   ├── extract_feature.py         # Feature extraction utilities
 │   └── demo_risk_object_detection.py # Demo script
 ├── main.py             # Main pipeline manager
 ├── pipeline_status.json # Pipeline execution status
