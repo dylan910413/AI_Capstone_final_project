@@ -2,18 +2,33 @@ import os
 import json
 import shutil
 import argparse
+import urllib.request
+import tarfile
+import zipfile
+import hashlib
+import time
+import sys
+from tqdm import tqdm
 from pathlib import Path
 import cv2
 import yaml
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Prepare RiskBench dataset for YOLOv8")
-    parser.add_argument('--riskbench_dir', type=str, required=True, 
+    parser.add_argument('--riskbench_dir', type=str, default='../data/riskbench',
                         help='Path to the root directory of RiskBench dataset')
     parser.add_argument('--output_dir', type=str, default='../data/riskbench_yolo',
                         help='Output directory for the prepared dataset')
     parser.add_argument('--split_ratio', type=float, default=0.2, 
                         help='Validation split ratio')
+    parser.add_argument('--download', action='store_true',
+                        help='Download RiskBench dataset if not available')
+    parser.add_argument('--download_subset', type=str, choices=['DATA_FOR_Planning_Aware_Metric', 'DATASET_for_LBC_Training'],
+                        help='Download a specific subset of RiskBench instead of full dataset')
+    parser.add_argument('--direct_url', type=str, default='',
+                        help='Directly provide a URL to download a specific RiskBench tar/zip file')
+    parser.add_argument('--no_prepare', action='store_true',
+                        help='Only download the dataset without preparing it for YOLOv8')
     return parser.parse_args()
 
 def create_yolo_label(annotation, img_width, img_height, output_label_path):
@@ -247,6 +262,159 @@ def get_class_mapping():
         # Add more classes as needed
     }
 
+# Progress bar for downloads
+class DownloadProgressBar(tqdm):
+    def update_to(self, b=1, bsize=1, tsize=None):
+        if tsize is not None:
+            self.total = tsize
+        self.update(b * bsize - self.n)
+
+def download_url(url, output_path, desc=None):
+    """Download a file from a URL with a progress bar."""
+    try:
+        with DownloadProgressBar(unit='B', unit_scale=True, miniters=1, desc=desc) as t:
+            urllib.request.urlretrieve(url, filename=output_path, reporthook=t.update_to)
+        return True
+    except Exception as e:
+        print(f"Error downloading {url}: {e}")
+        return False
+
+def download_riskbench(output_dir, subset=None, direct_url=None):
+    """Download RiskBench dataset or a subset of it."""
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Base GitHub URLs
+    github_base = "https://github.com/HCIS-Lab/RiskBench"
+    
+    if direct_url:
+        # Direct URL to a specific file
+        print(f"Downloading RiskBench file from direct URL: {direct_url}")
+        filename = os.path.basename(direct_url)
+        output_path = os.path.join(output_dir, filename)
+        
+        if download_url(direct_url, output_path, desc=f"Downloading {filename}"):
+            print(f"Downloaded {filename} successfully")
+            # Extract the file based on its extension
+            extract_archive(output_path, output_dir)
+            return True
+        else:
+            print(f"Failed to download from {direct_url}")
+            return False
+    
+    # Handle specific subsets
+    if subset:
+        if subset == "DATA_FOR_Planning_Aware_Metric":
+            # Example URL - adjust based on actual repository structure
+            url = f"{github_base}/raw/main/DATA_FOR_Planning_Aware_Metric.zip"
+            output_path = os.path.join(output_dir, "DATA_FOR_Planning_Aware_Metric.zip")
+            
+            if download_url(url, output_path, desc="Downloading Planning Aware Metric dataset"):
+                print("Downloaded Planning Aware Metric dataset successfully")
+                extract_archive(output_path, output_dir)
+                return True
+        
+        elif subset == "DATASET_for_LBC_Training":
+            # Example URL - adjust based on actual repository structure
+            url = f"{github_base}/raw/main/DATASET_for_LBC_Training.zip"
+            output_path = os.path.join(output_dir, "DATASET_for_LBC_Training.zip")
+            
+            if download_url(url, output_path, desc="Downloading LBC Training dataset"):
+                print("Downloaded LBC Training dataset successfully")
+                extract_archive(output_path, output_dir)
+                return True
+        
+        print(f"Failed to download subset: {subset}")
+        return False
+    
+    # If no specific subset, try to download the full dataset
+    print("Attempting to download full RiskBench dataset...")
+    print("Note: This may take a while as the full dataset is large.")
+    print("RiskBench provides multiple ways to download the dataset. Please visit:")
+    print(f"{github_base}")
+    print("\nThe following options are available:")
+    print("1. Use the --direct_url option with a specific file URL")
+    print("2. Use the --download_subset option to download a specific subset")
+    print("3. Manually download the dataset and use the --riskbench_dir option")
+    print("\nExamples:")
+    print("python prepare_riskbench.py --download --direct_url https://example.com/riskbench_file.tar")
+    print("python prepare_riskbench.py --download --download_subset DATA_FOR_Planning_Aware_Metric")
+    
+    return False
+
+def extract_archive(archive_path, output_dir):
+    """Extract tar/zip archives."""
+    print(f"Extracting {archive_path} to {output_dir}...")
+    
+    if archive_path.endswith('.tar') or archive_path.endswith('.tar.gz'):
+        with tarfile.open(archive_path) as tar:
+            # Get the total size for the progress bar
+            total_size = sum(member.size for member in tar.getmembers())
+            
+            # Set up progress bar
+            with tqdm(total=total_size, unit='B', unit_scale=True, desc="Extracting") as pbar:
+                for member in tar.getmembers():
+                    tar.extract(member, path=output_dir)
+                    pbar.update(member.size)
+    
+    elif archive_path.endswith('.zip'):
+        with zipfile.ZipFile(archive_path) as zip_ref:
+            # Get the total size for the progress bar
+            total_size = sum(info.file_size for info in zip_ref.infolist())
+            
+            # Set up progress bar
+            with tqdm(total=total_size, unit='B', unit_scale=True, desc="Extracting") as pbar:
+                for member in zip_ref.infolist():
+                    zip_ref.extract(member, path=output_dir)
+                    pbar.update(member.file_size)
+    
+    print(f"Extraction of {archive_path} completed.")
+
+def check_dataset_exists(dataset_dir):
+    """Check if the dataset directory exists and contains valid data."""
+    if not os.path.exists(dataset_dir):
+        return False
+    
+    # Check for key directories/files that would indicate the dataset is present
+    # Adjust this based on the actual structure of RiskBench
+    potential_indicators = ['rgb', 'annotation', 'scenarios']
+    
+    # Check if any of the indicator directories exist
+    for indicator in potential_indicators:
+        if os.path.exists(os.path.join(dataset_dir, indicator)):
+            return True
+    
+    # Look for any .json files which might be annotations
+    for root, _, files in os.walk(dataset_dir):
+        if any(f.endswith('.json') for f in files):
+            return True
+    
+    return False
+
 if __name__ == "__main__":
     args = parse_args()
-    process_riskbench_dataset(args.riskbench_dir, args.output_dir, args.split_ratio)
+    
+    # Check if dataset exists or needs to be downloaded
+    dataset_exists = check_dataset_exists(args.riskbench_dir)
+    
+    if args.download or (not dataset_exists and args.direct_url):
+        print("Starting RiskBench dataset download...")
+        success = download_riskbench(args.riskbench_dir, args.download_subset, args.direct_url)
+        
+        if not success:
+            print("\nDownload failed or was not executed. Please:")
+            print("1. Check your internet connection")
+            print("2. Verify the download URLs")
+            print("3. Consider manually downloading from the RiskBench GitHub repository")
+            sys.exit(1)
+        
+        # Re-check if dataset exists after download
+        dataset_exists = check_dataset_exists(args.riskbench_dir)
+    
+    if not dataset_exists:
+        print(f"Error: RiskBench dataset not found at {args.riskbench_dir}")
+        print("Please download the dataset and try again, or use the --download option.")
+        sys.exit(1)
+    
+    if not args.no_prepare:
+        print("\nProcessing RiskBench dataset for YOLOv8...")
+        process_riskbench_dataset(args.riskbench_dir, args.output_dir, args.split_ratio)
