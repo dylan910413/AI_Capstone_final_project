@@ -1,53 +1,62 @@
 import pandas as pd
-import os
 import numpy as np
+import os
 
 # Paths
 input_csv = "features/tracking_output.csv"
-output_csv = "features/motion_features.csv"
+output_csv = "features/track_summary.csv"
 
-# Optional: resolution to compute center distance
-FRAME_WIDTH = 640   # adjust based on your video
+# Optional: resolution of the video
+FRAME_WIDTH = 640
 FRAME_HEIGHT = 360
 
-# Ignore static classes
+# Ignore non-moving object classes
 IGNORED_CLASSES = {"traffic light", "stop sign", "traffic sign", "bench", "pole", "building", "potted plant"}
 
-# Load tracking data
+# Load CSV
 df = pd.read_csv(input_csv)
 
-# Compute center coordinates and bbox area
+# Compute center position and area
 df["cx"] = (df["x1"] + df["x2"]) / 2
 df["cy"] = (df["y1"] + df["y2"]) / 2
-df["area"] = (df["x2"] - df["x1"]) * (df["y2"] - df["y1"])
-
-# Compute distance to image center
 frame_cx = FRAME_WIDTH / 2
 frame_cy = FRAME_HEIGHT / 2
+df["area"] = (df["x2"] - df["x1"]) * (df["y2"] - df["y1"])
 df["dist_to_center"] = np.sqrt((df["cx"] - frame_cx)**2 + (df["cy"] - frame_cy)**2)
 
-# Sort for consistent processing
+# Sort by track/frame
 df.sort_values(by=["track_id", "frame"], inplace=True)
 
-# Compute speed (pixel/frame) per track_id
-df["speed"] = 0.0
-for tid in df["track_id"].unique():
-    track = df[df["track_id"] == tid]
+# Compute speed per object (based on center movement)
+speed_all = []
+for tid, track in df.groupby("track_id"):
     dx = track["cx"].diff()
     dy = track["cy"].diff()
-    speed = np.sqrt(dx**2 + dy**2)
-    df.loc[track.index, "speed"] = speed.fillna(0)
+    speed = np.sqrt(dx**2 + dy**2).fillna(0)
+    speed_all.extend(speed.values)
+df["speed"] = speed_all
 
-# Filter out ignored classes
+# Filter classes
 df = df[~df["class"].isin(IGNORED_CLASSES)]
 
-# Optional: filter out static objects with very low speed
-MIN_SPEED = 1.0  # adjust threshold as needed
-grouped = df.groupby("track_id")
-moving_ids = [tid for tid, g in grouped if g["speed"].max() >= MIN_SPEED]
-df = df[df["track_id"].isin(moving_ids)]
+# Summarize per object (track_id)
+summaries = []
+for tid, group in df.groupby("track_id"):
+    summary = {
+        "track_id": tid,
+        "class": group["class"].iloc[0],
+        "max_speed": group["speed"].max(),
+        "avg_speed": group["speed"].mean(),
+        "max_area": group["area"].max(),
+        "min_dist_to_center": group["dist_to_center"].min(),
+        "num_frames": len(group),
+        "start_frame": group["frame"].min(),
+        "end_frame": group["frame"].max()
+    }
+    summaries.append(summary)
 
-# Save to new CSV
+summary_df = pd.DataFrame(summaries)
 os.makedirs("features", exist_ok=True)
-df.to_csv(output_csv, index=False)
-print("Motion features extracted and saved to:", output_csv)
+summary_df.to_csv(output_csv, index=False)
+
+print("Track summary features saved to:", output_csv)
